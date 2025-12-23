@@ -1,0 +1,21 @@
+{
+  "name": "stock-predictor",
+  "version": "1.0.0",
+  "description": "S&P 500 Stock Upside Predictor with Backend",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "keywords": [
+    "stocks",
+    "predictor",
+    "sp500",
+    "vercel"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0"
+  }
+}
