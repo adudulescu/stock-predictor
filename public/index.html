@@ -29,6 +29,7 @@
         .my-watchlist { background: white; border-radius: 16px; padding: 24px; margin-bottom: 20px; }
         .watchlist-item { display: flex; justify-content: space-between; padding: 12px; border-bottom: 1px solid #e5e7eb; }
         .remove-btn { background: #ef4444; color: white; padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
+        .error-box { background: #fee; border: 2px solid #f44; color: #c00; padding: 12px; border-radius: 8px; margin: 12px 0; }
     </style>
 </head>
 <body>
@@ -54,6 +55,10 @@
                 </div>
             </div>
 
+            <button onclick="initializeData()" id="initBtn" style="width: 100%; padding: 12px; background: #f59e0b; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; margin-bottom: 8px;">
+                📊 Initialize Historical Data (First Time Only)
+            </button>
+
             <button onclick="analyzeStocks()" id="analyzeBtn" style="width: 100%; padding: 16px; background: #10b981; color: white; border: none; border-radius: 8px; font-size: 18px; font-weight: 700; cursor: pointer; margin-bottom: 16px;">
                 🔍 Analyze Top Opportunities
             </button>
@@ -73,8 +78,8 @@
     </div>
 
     <script>
-        // REPLACE THESE WITH YOUR SUPABASE CREDENTIALS
-        const supabase = window.supabase.createClient(
+        const { createClient } = supabase;
+        const supabaseClient = createClient(
             'https://enidizmtvmzyqcjwrcew.supabase.co',
             'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVuaWRpem10dm16eXFjandyY2V3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY0ODgzMzIsImV4cCI6MjA4MjA2NDMzMn0.Zp6Legk87WDZTh4yF2vJmfs76xyXO3JYRn16CSmeEn0'
         );
@@ -82,7 +87,7 @@
         let currentUser = null;
         let userWatchlist = [];
 
-        supabase.auth.getSession().then(({ data: { session } }) => {
+        supabaseClient.auth.getSession().then(({ data: { session } }) => {
             if (session) {
                 currentUser = session.user;
                 updateAuthUI();
@@ -90,7 +95,7 @@
             }
         });
 
-        supabase.auth.onAuthStateChange((event, session) => {
+        supabaseClient.auth.onAuthStateChange((event, session) => {
             currentUser = session?.user || null;
             updateAuthUI();
             if (currentUser) loadWatchlist();
@@ -115,7 +120,7 @@
         }
 
         async function signInWithGoogle() {
-            const { error } = await supabase.auth.signInWithOAuth({
+            const { error } = await supabaseClient.auth.signInWithOAuth({
                 provider: 'google'
             });
             if (error) alert('Sign in failed: ' + error.message);
@@ -125,7 +130,7 @@
             const email = prompt('Enter your email:');
             if (!email) return;
             
-            const { error } = await supabase.auth.signInWithOtp({ email });
+            const { error } = await supabaseClient.auth.signInWithOtp({ email });
             if (error) {
                 alert('Error: ' + error.message);
             } else {
@@ -134,26 +139,30 @@
         }
 
         async function signOut() {
-            await supabase.auth.signOut();
+            await supabaseClient.auth.signOut();
             userWatchlist = [];
         }
 
         async function loadWatchlist() {
             if (!currentUser) return;
             
-            const { data: { session } } = await supabase.auth.getSession();
+            const { data: { session } } = await supabaseClient.auth.getSession();
             if (!session) return;
 
-            const response = await fetch('/api/watchlist', {
-                headers: {
-                    'Authorization': 'Bearer ' + session.access_token
-                }
-            });
+            try {
+                const response = await fetch('/api/watchlist', {
+                    headers: {
+                        'Authorization': 'Bearer ' + session.access_token
+                    }
+                });
 
-            if (response.ok) {
-                const data = await response.json();
-                userWatchlist = data.watchlist || [];
-                displayWatchlist();
+                if (response.ok) {
+                    const data = await response.json();
+                    userWatchlist = data.watchlist || [];
+                    displayWatchlist();
+                }
+            } catch (error) {
+                console.error('Error loading watchlist:', error);
             }
         }
 
@@ -165,9 +174,19 @@
                 return;
             }
 
-            container.innerHTML = userWatchlist.map(function(item) {
-                return '<div class="watchlist-item"><div><strong>' + item.symbol + '</strong> - ' + item.name + '<br><small style="color: #6b7280;">Added at $' + (item.price_when_added || 0).toFixed(2) + ' • Target: $' + (item.target_when_added || 0).toFixed(2) + ' • Upside: ' + (item.upside_when_added || 0).toFixed(1) + '%</small></div><button class="remove-btn" onclick="removeFromWatchlist(\'' + item.symbol + '\')">Remove</button></div>';
-            }).join('');
+            container.innerHTML = userWatchlist.map(item => 
+                `<div class="watchlist-item">
+                    <div>
+                        <strong>${item.symbol}</strong> - ${item.name}<br>
+                        <small style="color: #6b7280;">
+                            Added at $${(item.price_when_added || 0).toFixed(2)} • 
+                            Target: $${(item.target_when_added || 0).toFixed(2)} • 
+                            Upside: ${(item.upside_when_added || 0).toFixed(1)}%
+                        </small>
+                    </div>
+                    <button class="remove-btn" onclick="removeFromWatchlist('${item.symbol}')">Remove</button>
+                </div>`
+            ).join('');
         }
 
         async function addToWatchlist(stock) {
@@ -176,48 +195,102 @@
                 return;
             }
 
-            const { data: { session } } = await supabase.auth.getSession();
+            const { data: { session } } = await supabaseClient.auth.getSession();
             if (!session) return;
 
-            const response = await fetch('/api/watchlist', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': 'Bearer ' + session.access_token
-                },
-                body: JSON.stringify({
-                    symbol: stock.symbol,
-                    name: stock.name,
-                    price: stock.price,
-                    target: stock.target,
-                    upside: stock.upside
-                })
-            });
+            try {
+                const response = await fetch('/api/watchlist', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + session.access_token
+                    },
+                    body: JSON.stringify({
+                        symbol: stock.symbol,
+                        name: stock.name,
+                        price: stock.price,
+                        target: stock.target,
+                        upside: stock.upside
+                    })
+                });
 
-            if (response.ok) {
-                alert('✅ ' + stock.symbol + ' added to watchlist!');
-                loadWatchlist();
-            } else {
-                const error = await response.json();
-                alert('Error: ' + error.error);
+                if (response.ok) {
+                    alert('✅ ' + stock.symbol + ' added to watchlist!');
+                    loadWatchlist();
+                } else {
+                    const error = await response.json();
+                    alert('Error: ' + (error.error || 'Failed to add to watchlist'));
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
             }
         }
 
         async function removeFromWatchlist(symbol) {
             if (!confirm('Remove ' + symbol + ' from watchlist?')) return;
 
-            const { data: { session } } = await supabase.auth.getSession();
+            const { data: { session } } = await supabaseClient.auth.getSession();
             if (!session) return;
 
-            const response = await fetch('/api/watchlist?symbol=' + symbol, {
-                method: 'DELETE',
-                headers: {
-                    'Authorization': 'Bearer ' + session.access_token
-                }
-            });
+            try {
+                const response = await fetch('/api/watchlist?symbol=' + symbol, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': 'Bearer ' + session.access_token
+                    }
+                });
 
-            if (response.ok) {
-                loadWatchlist();
+                if (response.ok) {
+                    loadWatchlist();
+                }
+            } catch (error) {
+                console.error('Error removing from watchlist:', error);
+            }
+        }
+
+        async function initializeData() {
+            const btn = document.getElementById('initBtn');
+            const loading = document.getElementById('loading');
+            const results = document.getElementById('results');
+
+            if (!confirm('This will collect 90 days of historical data for 40 stocks. It may take 2-3 minutes. Continue?')) {
+                return;
+            }
+
+            loading.style.display = 'block';
+            results.innerHTML = '';
+            btn.disabled = true;
+            btn.textContent = '⏳ Initializing data...';
+
+            try {
+                const response = await fetch('/api/initialize-data', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                if (!response.ok) throw new Error('Initialization failed');
+
+                const data = await response.json();
+                
+                results.innerHTML = `<div class="stock-card">
+                    <h2 style="color: #059669;">✅ Data Initialization Complete!</h2>
+                    <p style="margin-top: 12px;">Processed ${data.results.processed} stocks successfully.</p>
+                    <p style="margin-top: 8px; color: #6b7280;">You can now click "Analyze Top Opportunities" to get predictions!</p>
+                </div>`;
+
+                alert('✅ Historical data loaded! You can now analyze stocks.');
+
+            } catch (error) {
+                console.error('Initialization error:', error);
+                results.innerHTML = `<div class="stock-card">
+                    <div class="error-box">
+                        <strong>Error:</strong> ${error.message}
+                    </div>
+                </div>`;
+            } finally {
+                loading.style.display = 'none';
+                btn.disabled = false;
+                btn.textContent = '📊 Initialize Historical Data (First Time Only)';
             }
         }
 
@@ -242,13 +315,23 @@
                     })
                 });
 
-                if (!response.ok) throw new Error('Analysis failed');
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.message || errorData.error || 'Analysis failed');
+                }
 
                 const data = await response.json();
-                displayResults(data.opportunities);
+                console.log('API Response:', data);
+                displayResults(data.opportunities || []);
 
             } catch (error) {
-                results.innerHTML = '<div class="stock-card"><strong>Error:</strong> ' + error.message + '</div>';
+                console.error('Analysis error:', error);
+                results.innerHTML = `<div class="stock-card">
+                    <div class="error-box">
+                        <strong>Error:</strong> ${error.message}<br>
+                        <small>Check the browser console (F12) for more details</small>
+                    </div>
+                </div>`;
             } finally {
                 loading.style.display = 'none';
                 btn.disabled = false;
@@ -258,15 +341,39 @@
         function displayResults(opportunities) {
             const results = document.getElementById('results');
             
-            if (opportunities.length === 0) {
-                results.innerHTML = '<div class="stock-card"><h2>No opportunities found</h2><p>Try lowering the minimum upside threshold.</p></div>';
+            if (!opportunities || opportunities.length === 0) {
+                results.innerHTML = '<div class="stock-card"><h2>No opportunities found</h2><p>Try lowering the minimum upside threshold or check if the API key is configured correctly.</p></div>';
                 return;
             }
 
-            results.innerHTML = opportunities.map(function(stock) {
-                const isInWatchlist = userWatchlist.some(function(item) { return item.symbol === stock.symbol; });
+            results.innerHTML = opportunities.map(stock => {
+                const isInWatchlist = userWatchlist.some(item => item.symbol === stock.symbol);
                 
-                return '<div class="stock-card"><div class="stock-header"><div><div class="stock-symbol">' + stock.symbol + '</div><div style="font-size: 13px; color: #718096;">' + stock.name + '</div></div>' + (currentUser ? '<button class="watchlist-btn ' + (isInWatchlist ? 'added' : '') + '" onclick=\'addToWatchlist(' + JSON.stringify(stock).replace(/'/g, '&#39;') + ')\'>' + (isInWatchlist ? '✓ In Watchlist' : '⭐ Add to Watchlist') + '</button>' : '') + '</div><div class="stock-price">$' + stock.price.toFixed(2) + '</div><div class="upside-box"><div style="font-size: 12px; color: #065f46; font-weight: 600;">30-DAY UPSIDE POTENTIAL</div><div class="upside-value">+' + stock.upside.toFixed(1) + '%</div><div style="font-size: 12px; color: #065f46; margin-top: 4px;">Target: $' + stock.target.toFixed(2) + '</div></div><div style="margin-top: 12px;">' + stock.signals.slice(0, 3).map(function(sig) { return '<div style="font-size: 13px; color: #065f46; margin-bottom: 4px;">' + (sig.bullish ? '✓' : '●') + ' ' + sig.text + '</div>'; }).join('') + '</div></div>';
+                return `<div class="stock-card">
+                    <div class="stock-header">
+                        <div>
+                            <div class="stock-symbol">${stock.symbol}</div>
+                            <div style="font-size: 13px; color: #718096;">${stock.name}</div>
+                        </div>
+                        ${currentUser ? `<button class="watchlist-btn ${isInWatchlist ? 'added' : ''}" 
+                            onclick='addToWatchlist(${JSON.stringify(stock).replace(/'/g, "&#39;")})'>
+                            ${isInWatchlist ? '✓ In Watchlist' : '⭐ Add to Watchlist'}
+                        </button>` : ''}
+                    </div>
+                    <div class="stock-price">$${stock.price.toFixed(2)}</div>
+                    <div class="upside-box">
+                        <div style="font-size: 12px; color: #065f46; font-weight: 600;">30-DAY UPSIDE POTENTIAL</div>
+                        <div class="upside-value">+${stock.upside.toFixed(1)}%</div>
+                        <div style="font-size: 12px; color: #065f46; margin-top: 4px;">Target: $${stock.target.toFixed(2)}</div>
+                    </div>
+                    <div style="margin-top: 12px;">
+                        ${(stock.signals || []).slice(0, 3).map(sig => 
+                            `<div style="font-size: 13px; color: #065f46; margin-bottom: 4px;">
+                                ${sig.bullish ? '✓' : '◯'} ${sig.text}
+                            </div>`
+                        ).join('')}
+                    </div>
+                </div>`;
             }).join('');
         }
     </script>

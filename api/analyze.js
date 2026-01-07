@@ -1,8 +1,8 @@
-// api/analyze.js
-// Serverless function to analyze stocks
+// api/analyze.js - Updated to use prediction system
+// This orchestrates data collection and prediction
+import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req, res) {
-  // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -16,124 +16,125 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { symbols, minUpside = 10 } = req.body;
+    const { symbols, minUpside = 10, forceRefresh = false } = req.body;
     
     if (!symbols || !Array.isArray(symbols)) {
       return res.status(400).json({ error: 'Symbols array required' });
     }
 
-    const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
+    const supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_KEY
+    );
+
+    // Check if we have recent predictions (less than 1 hour old)
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     
-    if (!RAPIDAPI_KEY) {
-      return res.status(500).json({ error: 'API key not configured' });
+    if (!forceRefresh) {
+      const { data: existingPredictions } = await supabase
+        .from('predictions')
+        .select('*')
+        .in('symbol', symbols)
+        .gte('created_at', oneHourAgo)
+        .eq('prediction_date', new Date().toISOString().split('T')[0]);
+
+      if (existingPredictions && existingPredictions.length > 0) {
+        // Return cached predictions
+        const opportunities = existingPredictions
+          .filter(p => p.predicted_upside >= minUpside)
+          .map(p => ({
+            symbol: p.symbol,
+            name: p.symbol,
+            price: p.current_price,
+            target: p.predicted_price,
+            upside: p.predicted_upside,
+            confidence: p.confidence_score,
+            technicalScore: p.technical_score,
+            analystScore: p.analyst_score,
+            sentimentScore: p.sentiment_score,
+            signals: [
+              { text: `30-day predicted upside: +${p.predicted_upside.toFixed(1)}%`, bullish: true },
+              { text: `Confidence: ${p.confidence_score.toFixed(0)}%`, bullish: true },
+              { text: `Technical score: ${p.technical_score.toFixed(0)}/100`, bullish: p.technical_score > 60 }
+            ]
+          }))
+          .sort((a, b) => b.upside - a.upside);
+
+        return res.status(200).json({
+          success: true,
+          count: opportunities.length,
+          opportunities: opportunities,
+          cached: true,
+          analyzedAt: new Date().toISOString()
+        });
+      }
     }
 
-    // Fetch stock data from Yahoo Finance
-    const symbolsParam = symbols.join(',');
-    const url = `https://apidojo-yahoo-finance-v1.p.rapidapi.com/market/v2/get-quotes?region=US&symbols=${symbolsParam}`;
-    
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'X-RapidAPI-Key': RAPIDAPI_KEY,
-        'X-RapidAPI-Host': 'apidojo-yahoo-finance-v1.p.rapidapi.com'
+    // Step 1: Check if we have historical data, if not collect it
+    const { data: existingPrices } = await supabase
+      .from('stock_prices')
+      .select('symbol, date')
+      .in('symbol', symbols)
+      .order('date', { ascending: false })
+      .limit(symbols.length * 30);
+
+    const symbolsWithData = new Set(existingPrices?.map(p => p.symbol) || []);
+    const symbolsNeedingData = symbols.filter(s => !symbolsWithData.has(s));
+
+    // Collect data for symbols that don't have it
+    if (symbolsNeedingData.length > 0) {
+      console.log(`Collecting data for: ${symbolsNeedingData.join(', ')}`);
+      
+      // Call collect-data endpoint internally
+      const baseUrl = process.env.VERCEL_URL 
+        ? `https://${process.env.VERCEL_URL}`
+        : 'http://localhost:3000';
+      
+      try {
+        const collectResponse = await fetch(`${baseUrl}/api/collect-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbols: symbolsNeedingData })
+        });
+        
+        if (!collectResponse.ok) {
+          console.warn('Data collection had issues:', await collectResponse.text());
+        }
+      } catch (collectError) {
+        console.error('Data collection error:', collectError);
+        // Continue anyway with available data
       }
+    }
+
+    // Step 2: Generate predictions
+    console.log('Generating predictions...');
+    
+    const baseUrl = process.env.VERCEL_URL 
+      ? `https://${process.env.VERCEL_URL}`
+      : 'http://localhost:3000';
+    
+    const predictResponse = await fetch(`${baseUrl}/api/predict`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbols, minUpside })
     });
 
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
+    if (!predictResponse.ok) {
+      const errorText = await predictResponse.text();
+      throw new Error(`Prediction failed: ${errorText}`);
     }
 
-    const data = await response.json();
-    
-    if (!data.quoteResponse || !data.quoteResponse.result) {
-      return res.status(500).json({ error: 'Invalid API response' });
-    }
+    const predictions = await predictResponse.json();
 
-    // Process and analyze stocks
-    const opportunities = [];
-    
-    for (const quote of data.quoteResponse.result) {
-      const price = quote.regularMarketPrice || 0;
-      const target = quote.targetMeanPrice || null;
-      const yearLow = quote.fiftyTwoWeekLow || 0;
-      const yearHigh = quote.fiftyTwoWeekHigh || 0;
-      
-      if (price === 0 || !target) continue;
-      
-      // Calculate upside potential
-      const upside = ((target - price) / price) * 100;
-      
-      if (upside < minUpside) continue;
-      
-      // Calculate signals
-      const signals = [];
-      let score = 0;
-      
-      // Analyst upside
-      if (upside > 15) {
-        signals.push({ text: 'Strong analyst upside', bullish: true });
-        score += 3;
-      } else if (upside > 10) {
-        signals.push({ text: 'Moderate analyst upside', bullish: true });
-        score += 2;
-      } else if (upside > 5) {
-        signals.push({ text: 'Slight analyst upside', bullish: true });
-        score += 1;
-      }
-      
-      // Near 52-week low
-      if (yearLow > 0 && price <= yearLow * 1.15) {
-        signals.push({ text: 'Near 52-week low', bullish: true });
-        score += 2;
-      }
-      
-      // Analyst rating
-      const rating = quote.averageAnalystRating || quote.recommendationKey || '';
-      if (rating.toLowerCase().includes('buy') || rating.toLowerCase().includes('outperform')) {
-        signals.push({ text: 'Analyst Buy rating', bullish: true });
-        score += 2;
-      }
-      
-      // Recent dip
-      const changePct = quote.regularMarketChangePercent || 0;
-      if (changePct < -2) {
-        signals.push({ text: 'Recent price dip', bullish: true });
-        score += 1;
-      }
-      
-      opportunities.push({
-        symbol: quote.symbol,
-        name: quote.shortName || quote.symbol,
-        price: price,
-        target: target,
-        upside: upside,
-        yearLow: yearLow,
-        yearHigh: yearHigh,
-        changePct: changePct,
-        volume: quote.regularMarketVolume || 0,
-        marketCap: quote.marketCap || 0,
-        pe: quote.trailingPE || 0,
-        rating: rating,
-        signals: signals,
-        score: score,
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    // Sort by score then upside
-    opportunities.sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      return b.upside - a.upside;
-    });
-    
     return res.status(200).json({
       success: true,
-      count: opportunities.length,
-      opportunities: opportunities,
-      analyzedAt: new Date().toISOString()
+      count: predictions.count,
+      opportunities: predictions.opportunities,
+      cached: false,
+      analyzedAt: predictions.analyzedAt,
+      modelVersion: predictions.modelVersion
     });
-    
+
   } catch (error) {
     console.error('Analysis error:', error);
     return res.status(500).json({ 
