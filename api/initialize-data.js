@@ -1,5 +1,7 @@
 // api/initialize-data.js
-// One-time initialization to populate historical data for all stocks
+// Standalone version - collects data directly without calling other APIs
+import { createClient } from '@supabase/supabase-js';
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -10,62 +12,150 @@ export default async function handler(req, res) {
   }
 
   try {
-    // List of S&P 500 top stocks to initialize
-    const symbols = [
-      'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA', 'BRK-B',
-      'UNH', 'XOM', 'JPM', 'JNJ', 'V', 'PG', 'MA', 'HD', 'CVX', 'MRK',
-      'ABBV', 'LLY', 'AVGO', 'PEP', 'COST', 'KO', 'WMT', 'ADBE', 'MCD',
-      'CSCO', 'ACN', 'TMO', 'CRM', 'ABT', 'DHR', 'VZ', 'TXN', 'ORCL',
-      'NKE', 'DIS', 'NFLX', 'INTC'
+    // Initialize Supabase
+    const supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_KEY
+    );
+
+    const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
+    
+    if (!RAPIDAPI_KEY) {
+      return res.status(500).json({ error: 'RAPIDAPI_KEY not configured' });
+    }
+
+    // List of stocks to initialize
+    const allSymbols = [
+      'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA',
+      'UNH', 'XOM', 'JPM', 'JNJ', 'V', 'PG', 'MA', 'HD',
+      'CVX', 'MRK', 'ABBV', 'LLY', 'AVGO'
     ];
 
-    // Get the base URL - use the host header in production
-    const protocol = req.headers['x-forwarded-proto'] || 'https';
-    const host = req.headers['host'];
-    const baseUrl = host ? `${protocol}://${host}` : 'http://localhost:3000';
-
-    console.log('Base URL:', baseUrl);
-
-    // Process in batches to avoid timeout
-    const batchSize = 5; // Reduced to 5 to avoid timeout
     const results = {
-      totalSymbols: symbols.length,
+      totalSymbols: allSymbols.length,
       processed: 0,
-      batches: []
+      successCount: 0,
+      failCount: 0,
+      details: []
     };
 
-    for (let i = 0; i < symbols.length; i += batchSize) {
-      const batch = symbols.slice(i, i + batchSize);
-      
-      console.log(`Processing batch ${i / batchSize + 1}: ${batch.join(', ')}`);
-      
+    // Process each symbol
+    for (const symbol of allSymbols) {
       try {
-        const response = await fetch(`${baseUrl}/api/collect-data`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ symbols: batch })
+        console.log(`Processing ${symbol}...`);
+
+        // 1. Fetch historical prices (90 days)
+        const priceUrl = `https://apidojo-yahoo-finance-v1.p.rapidapi.com/stock/v3/get-historical-data?symbol=${symbol}&region=US`;
+        
+        const priceResponse = await fetch(priceUrl, {
+          method: 'GET',
+          headers: {
+            'X-RapidAPI-Key': RAPIDAPI_KEY,
+            'X-RapidAPI-Host': 'apidojo-yahoo-finance-v1.p.rapidapi.com'
+          }
         });
 
-        const result = await response.json();
-        results.batches.push({
-          batch: i / batchSize + 1,
-          symbols: batch,
-          success: result.success,
-          results: result.results
-        });
-        results.processed += batch.length;
+        let pricesInserted = 0;
 
-        // Small delay between batches
-        if (i + batchSize < symbols.length) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
+        if (priceResponse.ok) {
+          const priceData = await priceResponse.json();
+          
+          if (priceData.prices && Array.isArray(priceData.prices)) {
+            const pricesToInsert = priceData.prices
+              .filter(p => p.date && p.close)
+              .slice(0, 90)
+              .map(p => ({
+                symbol: symbol,
+                date: new Date(p.date * 1000).toISOString().split('T')[0],
+                open: p.open || null,
+                high: p.high || null,
+                low: p.low || null,
+                close: p.close,
+                volume: p.volume || null
+              }));
+
+            if (pricesToInsert.length > 0) {
+              const { error: priceError } = await supabase
+                .from('stock_prices')
+                .upsert(pricesToInsert, { 
+                  onConflict: 'symbol,date',
+                  ignoreDuplicates: false 
+                });
+
+              if (!priceError) {
+                pricesInserted = pricesToInsert.length;
+              } else {
+                console.error(`Price insert error for ${symbol}:`, priceError);
+              }
+            }
+          }
         }
 
+        // 2. Fetch current quote with analyst data
+        const quoteUrl = `https://apidojo-yahoo-finance-v1.p.rapidapi.com/market/v2/get-quotes?region=US&symbols=${symbol}`;
+        
+        const quoteResponse = await fetch(quoteUrl, {
+          method: 'GET',
+          headers: {
+            'X-RapidAPI-Key': RAPIDAPI_KEY,
+            'X-RapidAPI-Host': 'apidojo-yahoo-finance-v1.p.rapidapi.com'
+          }
+        });
+
+        let analystInserted = false;
+
+        if (quoteResponse.ok) {
+          const quoteData = await quoteResponse.json();
+          const quote = quoteData.quoteResponse?.result?.[0];
+          
+          if (quote) {
+            const analystRecord = {
+              symbol: symbol,
+              date: new Date().toISOString().split('T')[0],
+              target_mean: quote.targetMeanPrice || null,
+              target_high: quote.targetHighPrice || null,
+              target_low: quote.targetLowPrice || null,
+              recommendation: quote.recommendationKey || null,
+              number_of_analysts: quote.numberOfAnalystOpinions || null
+            };
+
+            const { error: analystError } = await supabase
+              .from('analyst_data')
+              .upsert([analystRecord], { 
+                onConflict: 'symbol,date',
+                ignoreDuplicates: false 
+              });
+
+            if (!analystError) {
+              analystInserted = true;
+            }
+          }
+        }
+
+        // Small delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 200));
+        
+        results.processed++;
+        if (pricesInserted > 0 || analystInserted) {
+          results.successCount++;
+        } else {
+          results.failCount++;
+        }
+
+        results.details.push({
+          symbol,
+          pricesInserted,
+          analystInserted,
+          success: pricesInserted > 0 || analystInserted
+        });
+
       } catch (error) {
-        console.error(`Batch ${i / batchSize + 1} error:`, error);
-        results.batches.push({
-          batch: i / batchSize + 1,
-          symbols: batch,
-          error: error.message
+        console.error(`Error processing ${symbol}:`, error);
+        results.failCount++;
+        results.details.push({
+          symbol,
+          error: error.message,
+          success: false
         });
       }
     }
