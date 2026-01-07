@@ -85,10 +85,10 @@ export default async function handler(req, res) {
     if (symbolsNeedingData.length > 0) {
       console.log(`Collecting data for: ${symbolsNeedingData.join(', ')}`);
       
-      // Call collect-data endpoint internally
-      const baseUrl = process.env.VERCEL_URL 
-        ? `https://${process.env.VERCEL_URL}`
-        : 'http://localhost:3000';
+      // Get the base URL from request headers
+      const protocol = req.headers['x-forwarded-proto'] || 'https';
+      const host = req.headers['host'];
+      const baseUrl = host ? `${protocol}://${host}` : 'http://localhost:3000';
       
       try {
         const collectResponse = await fetch(`${baseUrl}/api/collect-data`, {
@@ -109,9 +109,9 @@ export default async function handler(req, res) {
     // Step 2: Generate predictions
     console.log('Generating predictions...');
     
-    const baseUrl = process.env.VERCEL_URL 
-      ? `https://${process.env.VERCEL_URL}`
-      : 'http://localhost:3000';
+    const protocol = req.headers['x-forwarded-proto'] || 'https';
+    const host = req.headers['host'];
+    const baseUrl = host ? `${protocol}://${host}` : 'http://localhost:3000';
     
     const predictResponse = await fetch(`${baseUrl}/api/predict`, {
       method: 'POST',

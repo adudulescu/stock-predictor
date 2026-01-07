@@ -19,12 +19,15 @@ export default async function handler(req, res) {
       'NKE', 'DIS', 'NFLX', 'INTC'
     ];
 
-    const baseUrl = process.env.VERCEL_URL 
-      ? `https://${process.env.VERCEL_URL}`
-      : 'http://localhost:3000';
+    // Get the base URL - use the host header in production
+    const protocol = req.headers['x-forwarded-proto'] || 'https';
+    const host = req.headers['host'];
+    const baseUrl = host ? `${protocol}://${host}` : 'http://localhost:3000';
+
+    console.log('Base URL:', baseUrl);
 
     // Process in batches to avoid timeout
-    const batchSize = 10;
+    const batchSize = 5; // Reduced to 5 to avoid timeout
     const results = {
       totalSymbols: symbols.length,
       processed: 0,
