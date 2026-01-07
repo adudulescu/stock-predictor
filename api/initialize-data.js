@@ -58,7 +58,14 @@ export default async function handler(req, res) {
         let pricesInserted = 0;
 
         if (priceResponse.ok) {
-          const priceData = await priceResponse.json();
+          const priceText = await priceResponse.text();
+          let priceData;
+          try {
+            priceData = JSON.parse(priceText);
+          } catch (e) {
+            console.error(`JSON parse error for ${symbol}:`, e.message);
+            throw new Error(`Invalid JSON response for price data: ${priceText.substring(0, 100)}`);
+          }
           
           if (priceData.prices && Array.isArray(priceData.prices)) {
             const pricesToInsert = priceData.prices
@@ -105,8 +112,18 @@ export default async function handler(req, res) {
         let analystInserted = false;
 
         if (quoteResponse.ok) {
-          const quoteData = await quoteResponse.json();
-          const quote = quoteData.quoteResponse?.result?.[0];
+          const quoteText = await quoteResponse.text();
+          let quoteData;
+          try {
+            quoteData = JSON.parse(quoteText);
+          } catch (e) {
+            console.error(`JSON parse error for quote ${symbol}:`, e.message);
+            // Continue anyway, analyst data is optional
+            quoteData = null;
+          }
+          
+          if (quoteData) {
+            const quote = quoteData.quoteResponse?.result?.[0];
           
           if (quote) {
             const analystRecord = {
@@ -132,8 +149,8 @@ export default async function handler(req, res) {
           }
         }
 
-        // Small delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 200));
+        // Small delay to avoid rate limiting (increased to 500ms)
+        await new Promise(resolve => setTimeout(resolve, 500));
         
         results.processed++;
         if (pricesInserted > 0 || analystInserted) {
