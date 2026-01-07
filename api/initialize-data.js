@@ -24,11 +24,9 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'RAPIDAPI_KEY not configured' });
     }
 
-    // List of stocks to initialize
+    // List of stocks to initialize - REDUCED TO 5 to avoid timeout
     const allSymbols = [
-      'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA',
-      'UNH', 'XOM', 'JPM', 'JNJ', 'V', 'PG', 'MA', 'HD',
-      'CVX', 'MRK', 'ABBV', 'LLY', 'AVGO'
+      'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META'
     ];
 
     const results = {
