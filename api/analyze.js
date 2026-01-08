@@ -70,50 +70,27 @@ export default async function handler(req, res) {
       }
     }
 
-    // Step 1: Check if we have historical data, if not collect it
+    // Step 1: Check if we have historical data
     const { data: existingPrices } = await supabase
       .from('stock_prices')
       .select('symbol, date')
       .in('symbol', symbols)
       .order('date', { ascending: false })
-      .limit(symbols.length * 30);
+      .limit(symbols.length);
 
-    const symbolsWithData = new Set(existingPrices?.map(p => p.symbol) || []);
-    const symbolsNeedingData = symbols.filter(s => !symbolsWithData.has(s));
+    console.log('Found price data for symbols:', existingPrices?.map(p => p.symbol));
 
-    // Collect data for symbols that don't have it
-    if (symbolsNeedingData.length > 0) {
-      console.log(`Collecting data for: ${symbolsNeedingData.join(', ')}`);
-      
-      // Get the base URL from request headers
-      const protocol = req.headers['x-forwarded-proto'] || 'https';
-      const host = req.headers['host'];
-      const baseUrl = host ? `${protocol}://${host}` : 'http://localhost:3000';
-      
-      try {
-        const collectResponse = await fetch(`${baseUrl}/api/collect-data`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ symbols: symbolsNeedingData })
-        });
-        
-        if (!collectResponse.ok) {
-          console.warn('Data collection had issues:', await collectResponse.text());
-        }
-      } catch (collectError) {
-        console.error('Data collection error:', collectError);
-        // Continue anyway with available data
-      }
-    }
-
-    // Step 2: Generate predictions
+    // Step 2: Generate predictions directly (skip collect-data for now)
     console.log('Generating predictions...');
     
+    // Call predict API
     const protocol = req.headers['x-forwarded-proto'] || 'https';
     const host = req.headers['host'];
     const baseUrl = host ? `${protocol}://${host}` : 'http://localhost:3000';
     
-    const predictResponse = await fetch(`${baseUrl}/api/predict`, {
+    let predictResponse;
+    try {
+      predictResponse = await fetch(`${baseUrl}/api/predict`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ symbols, minUpside })
