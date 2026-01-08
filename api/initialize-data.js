@@ -1,5 +1,5 @@
 // api/initialize-data.js
-// Standalone version - collects data directly without calling other APIs
+// Mock data version - uses fake data to test the system
 import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req, res) {
@@ -17,15 +17,16 @@ export default async function handler(req, res) {
       process.env.SUPABASE_SERVICE_KEY
     );
 
-    const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
-    
-    if (!RAPIDAPI_KEY) {
-      return res.status(500).json({ error: 'RAPIDAPI_KEY not configured' });
-    }
+    // Mock stock data
+    const stocksData = {
+      'AAPL': { name: 'Apple Inc.', currentPrice: 195.50, targetPrice: 220.00 },
+      'MSFT': { name: 'Microsoft Corporation', currentPrice: 378.25, targetPrice: 410.00 },
+      'GOOGL': { name: 'Alphabet Inc.', currentPrice: 140.35, targetPrice: 165.00 },
+      'AMZN': { name: 'Amazon.com Inc.', currentPrice: 151.20, targetPrice: 175.00 },
+      'META': { name: 'Meta Platforms Inc.', currentPrice: 352.90, targetPrice: 395.00 }
+    };
 
-    // Only 5 stocks to avoid timeout
-    const allSymbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META'];
-
+    const allSymbols = Object.keys(stocksData);
     const results = {
       totalSymbols: allSymbols.length,
       processed: 0,
@@ -34,116 +35,68 @@ export default async function handler(req, res) {
       details: []
     };
 
+    const today = new Date();
+
     for (const symbol of allSymbols) {
       try {
-        console.log(`Processing ${symbol}...`);
-
-        // Fetch historical prices
-        const priceUrl = `https://apidojo-yahoo-finance-v1.p.rapidapi.com/stock/v3/get-historical-data?symbol=${symbol}&region=US`;
-        
-        const priceResponse = await fetch(priceUrl, {
-          headers: {
-            'X-RapidAPI-Key': RAPIDAPI_KEY,
-            'X-RapidAPI-Host': 'apidojo-yahoo-finance-v1.p.rapidapi.com'
-          }
-        });
-
+        const stock = stocksData[symbol];
         let pricesInserted = 0;
-
-        if (priceResponse.ok) {
-          const priceText = await priceResponse.text();
-          let priceData;
-          try {
-            priceData = JSON.parse(priceText);
-          } catch (e) {
-            console.error(`JSON parse error for ${symbol}:`, e.message);
-            throw new Error(`Invalid JSON for price data`);
-          }
+        
+        // Generate 30 days of mock price data
+        const prices = [];
+        const basePrice = stock.currentPrice;
+        
+        for (let i = 29; i >= 0; i--) {
+          const date = new Date(today);
+          date.setDate(date.getDate() - i);
           
-          if (priceData.prices && Array.isArray(priceData.prices)) {
-            const pricesToInsert = priceData.prices
-              .filter(p => p.date && p.close)
-              .slice(0, 90)
-              .map(p => ({
-                symbol: symbol,
-                date: new Date(p.date * 1000).toISOString().split('T')[0],
-                open: p.open || null,
-                high: p.high || null,
-                low: p.low || null,
-                close: p.close,
-                volume: p.volume || null
-              }));
-
-            if (pricesToInsert.length > 0) {
-              const { error: priceError } = await supabase
-                .from('stock_prices')
-                .upsert(pricesToInsert, { 
-                  onConflict: 'symbol,date',
-                  ignoreDuplicates: false 
-                });
-
-              if (!priceError) {
-                pricesInserted = pricesToInsert.length;
-              } else {
-                console.error(`Price insert error:`, priceError);
-              }
-            }
-          }
+          // Add some random variation
+          const variation = (Math.random() - 0.5) * 10;
+          const price = basePrice + variation;
+          
+          prices.push({
+            symbol: symbol,
+            date: date.toISOString().split('T')[0],
+            open: price + (Math.random() - 0.5) * 2,
+            high: price + Math.random() * 3,
+            low: price - Math.random() * 3,
+            close: price,
+            volume: Math.floor(Math.random() * 100000000)
+          });
         }
 
-        // Fetch analyst data
-        const quoteUrl = `https://apidojo-yahoo-finance-v1.p.rapidapi.com/market/v2/get-quotes?region=US&symbols=${symbol}`;
-        
-        const quoteResponse = await fetch(quoteUrl, {
-          headers: {
-            'X-RapidAPI-Key': RAPIDAPI_KEY,
-            'X-RapidAPI-Host': 'apidojo-yahoo-finance-v1.p.rapidapi.com'
-          }
-        });
+        // Insert price data
+        const { error: priceError } = await supabase
+          .from('stock_prices')
+          .upsert(prices, { 
+            onConflict: 'symbol,date',
+            ignoreDuplicates: false 
+          });
 
-        let analystInserted = false;
-
-        if (quoteResponse.ok) {
-          const quoteText = await quoteResponse.text();
-          let quoteData;
-          try {
-            quoteData = JSON.parse(quoteText);
-          } catch (e) {
-            console.error(`JSON parse error for quote:`, e.message);
-            quoteData = null;
-          }
-          
-          if (quoteData) {
-            const quote = quoteData.quoteResponse?.result?.[0];
-            
-            if (quote) {
-              const analystRecord = {
-                symbol: symbol,
-                date: new Date().toISOString().split('T')[0],
-                target_mean: quote.targetMeanPrice || null,
-                target_high: quote.targetHighPrice || null,
-                target_low: quote.targetLowPrice || null,
-                recommendation: quote.recommendationKey || null,
-                number_of_analysts: quote.numberOfAnalystOpinions || null
-              };
-
-              const { error: analystError } = await supabase
-                .from('analyst_data')
-                .upsert([analystRecord], { 
-                  onConflict: 'symbol,date',
-                  ignoreDuplicates: false 
-                });
-
-              if (!analystError) {
-                analystInserted = true;
-              }
-            }
-          }
+        if (!priceError) {
+          pricesInserted = prices.length;
         }
 
-        // Delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
+        // Insert analyst data
+        const analystRecord = {
+          symbol: symbol,
+          date: today.toISOString().split('T')[0],
+          target_mean: stock.targetPrice,
+          target_high: stock.targetPrice * 1.1,
+          target_low: stock.targetPrice * 0.9,
+          recommendation: 'buy',
+          number_of_analysts: 25
+        };
+
+        const { error: analystError } = await supabase
+          .from('analyst_data')
+          .upsert([analystRecord], { 
+            onConflict: 'symbol,date',
+            ignoreDuplicates: false 
+          });
+
+        const analystInserted = !analystError;
+
         results.processed++;
         if (pricesInserted > 0 || analystInserted) {
           results.successCount++;
@@ -171,8 +124,9 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       success: true,
-      message: 'Data initialization completed',
+      message: 'Mock data initialization completed',
       results: results,
+      note: 'Using mock data - replace with real API later',
       completedAt: new Date().toISOString()
     });
 
