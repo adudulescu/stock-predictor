@@ -12,7 +12,6 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Initialize Supabase
     const supabase = createClient(
       process.env.SUPABASE_URL,
       process.env.SUPABASE_SERVICE_KEY
@@ -24,10 +23,8 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'RAPIDAPI_KEY not configured' });
     }
 
-    // List of stocks to initialize - REDUCED TO 5 to avoid timeout
-    const allSymbols = [
-      'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META'
-    ];
+    // Only 5 stocks to avoid timeout
+    const allSymbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META'];
 
     const results = {
       totalSymbols: allSymbols.length,
@@ -37,16 +34,14 @@ export default async function handler(req, res) {
       details: []
     };
 
-    // Process each symbol
     for (const symbol of allSymbols) {
       try {
         console.log(`Processing ${symbol}...`);
 
-        // 1. Fetch historical prices (90 days)
+        // Fetch historical prices
         const priceUrl = `https://apidojo-yahoo-finance-v1.p.rapidapi.com/stock/v3/get-historical-data?symbol=${symbol}&region=US`;
         
         const priceResponse = await fetch(priceUrl, {
-          method: 'GET',
           headers: {
             'X-RapidAPI-Key': RAPIDAPI_KEY,
             'X-RapidAPI-Host': 'apidojo-yahoo-finance-v1.p.rapidapi.com'
@@ -62,7 +57,7 @@ export default async function handler(req, res) {
             priceData = JSON.parse(priceText);
           } catch (e) {
             console.error(`JSON parse error for ${symbol}:`, e.message);
-            throw new Error(`Invalid JSON response for price data: ${priceText.substring(0, 100)}`);
+            throw new Error(`Invalid JSON for price data`);
           }
           
           if (priceData.prices && Array.isArray(priceData.prices)) {
@@ -90,17 +85,16 @@ export default async function handler(req, res) {
               if (!priceError) {
                 pricesInserted = pricesToInsert.length;
               } else {
-                console.error(`Price insert error for ${symbol}:`, priceError);
+                console.error(`Price insert error:`, priceError);
               }
             }
           }
         }
 
-        // 2. Fetch current quote with analyst data
+        // Fetch analyst data
         const quoteUrl = `https://apidojo-yahoo-finance-v1.p.rapidapi.com/market/v2/get-quotes?region=US&symbols=${symbol}`;
         
         const quoteResponse = await fetch(quoteUrl, {
-          method: 'GET',
           headers: {
             'X-RapidAPI-Key': RAPIDAPI_KEY,
             'X-RapidAPI-Host': 'apidojo-yahoo-finance-v1.p.rapidapi.com'
@@ -115,39 +109,39 @@ export default async function handler(req, res) {
           try {
             quoteData = JSON.parse(quoteText);
           } catch (e) {
-            console.error(`JSON parse error for quote ${symbol}:`, e.message);
-            // Continue anyway, analyst data is optional
+            console.error(`JSON parse error for quote:`, e.message);
             quoteData = null;
           }
           
           if (quoteData) {
             const quote = quoteData.quoteResponse?.result?.[0];
-          
-          if (quote) {
-            const analystRecord = {
-              symbol: symbol,
-              date: new Date().toISOString().split('T')[0],
-              target_mean: quote.targetMeanPrice || null,
-              target_high: quote.targetHighPrice || null,
-              target_low: quote.targetLowPrice || null,
-              recommendation: quote.recommendationKey || null,
-              number_of_analysts: quote.numberOfAnalystOpinions || null
-            };
+            
+            if (quote) {
+              const analystRecord = {
+                symbol: symbol,
+                date: new Date().toISOString().split('T')[0],
+                target_mean: quote.targetMeanPrice || null,
+                target_high: quote.targetHighPrice || null,
+                target_low: quote.targetLowPrice || null,
+                recommendation: quote.recommendationKey || null,
+                number_of_analysts: quote.numberOfAnalystOpinions || null
+              };
 
-            const { error: analystError } = await supabase
-              .from('analyst_data')
-              .upsert([analystRecord], { 
-                onConflict: 'symbol,date',
-                ignoreDuplicates: false 
-              });
+              const { error: analystError } = await supabase
+                .from('analyst_data')
+                .upsert([analystRecord], { 
+                  onConflict: 'symbol,date',
+                  ignoreDuplicates: false 
+                });
 
-            if (!analystError) {
-              analystInserted = true;
+              if (!analystError) {
+                analystInserted = true;
+              }
             }
           }
         }
 
-        // Small delay to avoid rate limiting (increased to 500ms)
+        // Delay to avoid rate limiting
         await new Promise(resolve => setTimeout(resolve, 500));
         
         results.processed++;
