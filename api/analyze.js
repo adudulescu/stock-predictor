@@ -70,7 +70,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // Step 1: Check if we have historical data
+    // Check if we have historical data
     const { data: existingPrices } = await supabase
       .from('stock_prices')
       .select('symbol, date')
@@ -80,10 +80,9 @@ export default async function handler(req, res) {
 
     console.log('Found price data for symbols:', existingPrices?.map(p => p.symbol));
 
-    // Step 2: Generate predictions directly (skip collect-data for now)
+    // Generate predictions
     console.log('Generating predictions...');
     
-    // Call predict API
     const protocol = req.headers['x-forwarded-proto'] || 'https';
     const host = req.headers['host'];
     const baseUrl = host ? `${protocol}://${host}` : 'http://localhost:3000';
@@ -91,14 +90,19 @@ export default async function handler(req, res) {
     let predictResponse;
     try {
       predictResponse = await fetch(`${baseUrl}/api/predict`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbols, minUpside })
-    });
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbols, minUpside })
+      });
+    } catch (fetchError) {
+      console.error('Predict API fetch error:', fetchError);
+      throw new Error(`Could not reach predict API: ${fetchError.message}`);
+    }
 
     if (!predictResponse.ok) {
       const errorText = await predictResponse.text();
-      throw new Error(`Prediction failed: ${errorText}`);
+      console.error('Predict API error:', errorText);
+      throw new Error(`Prediction API returned ${predictResponse.status}: ${errorText.substring(0, 200)}`);
     }
 
     const predictions = await predictResponse.json();
