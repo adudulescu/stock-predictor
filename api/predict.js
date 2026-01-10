@@ -18,31 +18,45 @@ export default async function handler(req, res) {
   try {
     const { symbols, minUpside = 10 } = req.body;
     
+    console.log('Predict API called with:', { symbols, minUpside });
+    
     if (!symbols || !Array.isArray(symbols)) {
       return res.status(400).json({ error: 'Symbols array required' });
     }
 
+    console.log('Connecting to Supabase...');
     const supabase = createClient(
       process.env.SUPABASE_URL,
       process.env.SUPABASE_SERVICE_KEY
     );
+    
+    console.log('Supabase connected, starting predictions...');
 
     const predictions = [];
 
     for (const symbol of symbols) {
       try {
+        console.log(`Processing ${symbol}...`);
+        
         // 1. Get historical prices (last 30 days)
-        const { data: prices } = await supabase
+        const { data: prices, error: pricesError } = await supabase
           .from('stock_prices')
           .select('*')
           .eq('symbol', symbol)
           .order('date', { ascending: false })
           .limit(30);
 
-        if (!prices || prices.length < 10) {
-          console.log(`Insufficient data for ${symbol}`);
+        if (pricesError) {
+          console.error(`Error fetching prices for ${symbol}:`, pricesError);
           continue;
         }
+
+        if (!prices || prices.length < 10) {
+          console.log(`Insufficient data for ${symbol}: ${prices?.length || 0} days`);
+          continue;
+        }
+        
+        console.log(`Found ${prices.length} days of data for ${symbol}`);
 
         // 2. Get analyst data
         const { data: analystData } = await supabase
