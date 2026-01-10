@@ -17,8 +17,7 @@
         h1 { font-size: 24px; color: #1a202c; margin-bottom: 8px; }
         .watchlist-btn { background: #10b981; color: white; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; }
         .watchlist-btn.added { background: #6b7280; }
-        .stock-card { background: white; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; }
-        .stock-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+        .stock-card { background: white; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         .stock-header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 12px; }
         .stock-symbol { font-size: 20px; font-weight: 700; color: #1a202c; }
         .stock-price { font-size: 24px; font-weight: 700; margin: 12px 0; }
@@ -31,18 +30,6 @@
         .watchlist-item { display: flex; justify-content: space-between; padding: 12px; border-bottom: 1px solid #e5e7eb; }
         .remove-btn { background: #ef4444; color: white; padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
         .error-box { background: #fee; border: 2px solid #f44; color: #c00; padding: 12px; border-radius: 8px; margin: 12px 0; }
-        .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px; }
-        .modal-content { background: white; border-radius: 16px; max-width: 900px; width: 100%; max-height: 90vh; overflow-y: auto; padding: 24px; position: relative; }
-        .modal-close { position: absolute; top: 16px; right: 16px; background: #ef4444; color: white; border: none; border-radius: 50%; width: 32px; height: 32px; cursor: pointer; font-size: 20px; font-weight: bold; }
-        .score-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin: 20px 0; }
-        .score-card { background: #f9fafb; border-radius: 8px; padding: 16px; }
-        .score-label { font-size: 12px; color: #6b7280; font-weight: 600; text-transform: uppercase; margin-bottom: 4px; }
-        .score-value { font-size: 28px; font-weight: 700; color: #1a202c; }
-        .indicator-row { display: flex; justify-content: space-between; padding: 12px; border-bottom: 1px solid #e5e7eb; }
-        .indicator-label { font-weight: 600; color: #374151; }
-        .indicator-value { color: #059669; font-weight: 600; }
-        .section-title { font-size: 18px; font-weight: 700; color: #1a202c; margin: 24px 0 12px 0; border-bottom: 2px solid #e5e7eb; padding-bottom: 8px; }
-        .calculation-box { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 12px; margin: 12px 0; border-radius: 4px; }
     </style>
 </head>
 <body>
@@ -108,8 +95,6 @@
 
         <div id="results"></div>
     </div>
-
-    <div id="analysisModal" style="display: none;"></div>
 
     <script>
         const { createClient } = supabase;
@@ -242,9 +227,9 @@
                     body: JSON.stringify({
                         symbol: stock.symbol,
                         name: stock.name,
-                        price: stock.currentPrice,
-                        target: stock.predictedPrice,
-                        upside: stock.predictedUpside
+                        price: stock.price,
+                        target: stock.target,
+                        upside: stock.upside
                     })
                 });
 
@@ -345,7 +330,7 @@
                     },
                     body: JSON.stringify({
                         symbols: ['AAPL','MSFT','NVDA','AMZN','GOOGL','META','TSLA','UNH','XOM','JPM','JNJ','V','PG','MA','HD','CVX','MRK','ABBV','LLY','AVGO'],
-                        minUpside: 0
+                        minUpside: 0  // Changed from 10 to 0 to see all predictions
                     })
                 });
 
@@ -383,177 +368,33 @@
             results.innerHTML = opportunities.map(stock => {
                 const isInWatchlist = userWatchlist.some(item => item.symbol === stock.symbol);
                 
-                return `<div class="stock-card" onclick='showAnalysis(${JSON.stringify(stock).replace(/'/g, "&#39;")})'>
+                return `<div class="stock-card">
                     <div class="stock-header">
                         <div>
                             <div class="stock-symbol">${stock.symbol}</div>
                             <div style="font-size: 13px; color: #718096;">${stock.name}</div>
                         </div>
                         ${currentUser ? `<button class="watchlist-btn ${isInWatchlist ? 'added' : ''}" 
-                            onclick='event.stopPropagation(); addToWatchlist(${JSON.stringify(stock).replace(/'/g, "&#39;")})'>
+                            onclick='addToWatchlist(${JSON.stringify(stock).replace(/'/g, "&#39;")})'>
                             ${isInWatchlist ? '✓ In Watchlist' : '⭐ Add to Watchlist'}
                         </button>` : ''}
                     </div>
-                    <div class="stock-price">$${stock.currentPrice.toFixed(2)}</div>
+                    <div class="stock-price">$${stock.price.toFixed(2)}</div>
                     <div class="upside-box">
                         <div style="font-size: 12px; color: #065f46; font-weight: 600;">30-DAY UPSIDE POTENTIAL</div>
-                        <div class="upside-value">+${stock.predictedUpside.toFixed(1)}%</div>
-                        <div style="font-size: 12px; color: #065f46; margin-top: 4px;">Target: $${stock.predictedPrice.toFixed(2)}</div>
+                        <div class="upside-value">+${stock.upside.toFixed(1)}%</div>
+                        <div style="font-size: 12px; color: #065f46; margin-top: 4px;">Target: $${stock.target.toFixed(2)}</div>
                     </div>
                     <div style="margin-top: 12px;">
                         ${(stock.signals || []).slice(0, 3).map(sig => 
                             `<div style="font-size: 13px; color: #065f46; margin-bottom: 4px;">
-                                ${sig.bullish ? '✓' : '○'} ${sig.text}
+                                ${sig.bullish ? '✓' : '◯'} ${sig.text}
                             </div>`
                         ).join('')}
-                    </div>
-                    <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #e5e7eb; font-size: 13px; color: #6b7280; font-weight: 600;">
-                        🔍 Click for detailed technical analysis
                     </div>
                 </div>`;
             }).join('');
         }
-
-        function showAnalysis(stock) {
-            const modal = document.getElementById('analysisModal');
-            const tech = stock.technical || {};
-            
-            modal.innerHTML = `
-                <div class="modal-overlay" onclick="closeAnalysis(event)">
-                    <div class="modal-content" onclick="event.stopPropagation()">
-                        <button class="modal-close" onclick="closeAnalysis()">×</button>
-                        
-                        <h1 style="font-size: 28px; color: #1a202c; margin-bottom: 8px;">${stock.symbol} Technical Analysis</h1>
-                        <div style="font-size: 16px; color: #6b7280; margin-bottom: 24px;">Current Price: $${stock.currentPrice.toFixed(2)}</div>
-                        
-                        <div class="score-grid">
-                            <div class="score-card">
-                                <div class="score-label">Combined Score</div>
-                                <div class="score-value" style="color: ${stock.combinedScore > 60 ? '#059669' : stock.combinedScore > 40 ? '#f59e0b' : '#ef4444'}">
-                                    ${stock.combinedScore.toFixed(0)}/100
-                                </div>
-                            </div>
-                            <div class="score-card">
-                                <div class="score-label">Technical Score</div>
-                                <div class="score-value" style="color: ${stock.technicalScore > 60 ? '#059669' : stock.technicalScore > 40 ? '#f59e0b' : '#ef4444'}">
-                                    ${stock.technicalScore.toFixed(0)}/100
-                                </div>
-                            </div>
-                            <div class="score-card">
-                                <div class="score-label">Analyst Score</div>
-                                <div class="score-value" style="color: ${stock.analystScore > 60 ? '#059669' : stock.analystScore > 40 ? '#f59e0b' : '#ef4444'}">
-                                    ${stock.analystScore.toFixed(0)}/100
-                                </div>
-                            </div>
-                            <div class="score-card">
-                                <div class="score-label">Confidence</div>
-                                <div class="score-value" style="color: ${stock.confidence > 70 ? '#059669' : stock.confidence > 50 ? '#f59e0b' : '#ef4444'}">
-                                    ${stock.confidence.toFixed(0)}%
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="section-title">📊 Technical Indicators</div>
-                        <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
-                            <div class="indicator-row">
-                                <div class="indicator-label">RSI (14-day)</div>
-                                <div class="indicator-value" style="color: ${tech.rsi < 30 ? '#059669' : tech.rsi > 70 ? '#ef4444' : '#f59e0b'}">
-                                    ${tech.rsi?.toFixed(2) || 'N/A'}
-                                    ${tech.rsi < 30 ? ' (Oversold 📈)' : tech.rsi > 70 ? ' (Overbought 📉)' : ' (Neutral)'}
-                                </div>
-                            </div>
-                            <div class="indicator-row">
-                                <div class="indicator-label">20-Day SMA</div>
-                                <div class="indicator-value">$${tech.sma20?.toFixed(2) || 'N/A'}</div>
-                            </div>
-                            <div class="indicator-row">
-                                <div class="indicator-label">50-Day SMA</div>
-                                <div class="indicator-value">$${tech.sma50?.toFixed(2) || 'N/A'}</div>
-                            </div>
-                            <div class="indicator-row">
-                                <div class="indicator-label">Momentum (10-day)</div>
-                                <div class="indicator-value" style="color: ${tech.momentum > 5 ? '#059669' : tech.momentum < -5 ? '#ef4444' : '#f59e0b'}">
-                                    ${tech.momentum > 0 ? '+' : ''}${tech.momentum?.toFixed(2) || 'N/A'}%
-                                </div>
-                            </div>
-                            <div class="indicator-row" style="border-bottom: none;">
-                                <div class="indicator-label">Volatility (30-day)</div>
-                                <div class="indicator-value" style="color: ${tech.volatility < 2 ? '#059669' : tech.volatility > 5 ? '#ef4444' : '#f59e0b'}">
-                                    ${tech.volatility?.toFixed(2) || 'N/A'}%
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="section-title">🧮 Score Calculation Breakdown</div>
-                        
-                        <div class="calculation-box">
-                            <div style="font-weight: 700; margin-bottom: 8px;">Technical Score: ${stock.technicalScore.toFixed(0)}/100</div>
-                            <div style="font-size: 14px; line-height: 1.6;">
-                                Technical Score (40%): ${stock.technicalScore.toFixed(0)} × 0.40 = ${(stock.technicalScore * 0.4).toFixed(1)}<br>
-                                Analyst Score (40%): ${stock.analystScore.toFixed(0)} × 0.40 = ${(stock.analystScore * 0.4).toFixed(1)}<br>
-                                Sentiment Score (20%): ${stock.sentimentScore.toFixed(0)} × 0.20 = ${(stock.sentimentScore * 0.2).toFixed(1)}<br>
-                                <strong style="color: #1a202c; margin-top: 8px; display: block;">Total: ${stock.combinedScore.toFixed(0)}/100</strong>
-                            </div>
-                        </div>
-
-                        <div class="section-title">🎯 Price Prediction</div>
-                        <div style="background: #d1fae5; padding: 16px; border-radius: 8px; border-left: 4px solid #059669;">
-                            <div style="font-size: 14px; color: #065f46; margin-bottom: 12px;">
-                                <strong>Current Price:</strong> ${stock.currentPrice.toFixed(2)}<br>
-                                <strong>30-Day Target:</strong> ${stock.predictedPrice.toFixed(2)}<br>
-                                <strong>Expected Gain:</strong> +${stock.predictedUpside.toFixed(1)}% (${((stock.predictedPrice - stock.currentPrice)).toFixed(2)} points)
-                            </div>
-                            <div style="font-size: 13px; color: #065f46; line-height: 1.6;">
-                                <strong>Prediction Formula:</strong><br>
-                                Momentum Impact: ${(tech.momentum * 0.5).toFixed(2)}%<br>
-                                + Analyst Influence: ${stock.analystScore > 50 ? ((stock.analystScore - 50) / 2 * 0.3).toFixed(2) : '0.00'}%<br>
-                                = Total Predicted Upside: ${stock.predictedUpside.toFixed(2)}%
-                            </div>
-                        </div>
-
-                        <div class="section-title">📌 Trading Signals</div>
-                        <div style="background: #f9fafb; padding: 16px; border-radius: 8px;">
-                            ${stock.signals.map(sig => 
-                                `<div style="display: flex; align-items: center; margin-bottom: 8px; font-size: 14px;">
-                                    <span style="font-size: 18px; margin-right: 8px;">${sig.bullish ? '✅' : '⭕'}</span>
-                                    <span style="color: ${sig.bullish ? '#059669' : '#6b7280'};">${sig.text}</span>
-                                </div>`
-                            ).join('')}
-                        </div>
-
-                        <div style="margin-top: 24px; padding: 16px; background: #fef3c7; border-radius: 8px; border-left: 4px solid #f59e0b;">
-                            <div style="font-size: 12px; color: #92400e; line-height: 1.6;">
-                                <strong>⚠️ Disclaimer:</strong> This analysis is for educational purposes only. Past performance does not guarantee future results. 
-                                Always conduct your own research and consider consulting with a financial advisor before making investment decisions.
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            modal.style.display = 'block';
-            document.body.style.overflow = 'hidden';
-        }
-
-        function closeAnalysis(event) {
-            if (event && event.target.className !== 'modal-overlay' && event.target.className !== 'modal-close') {
-                return;
-            }
-            document.getElementById('analysisModal').style.display = 'none';
-            document.body.style.overflow = 'auto';
-        }
     </script>
 </body>
-</html>Base Score: 50 (neutral)<br>
-                                ${tech.rsi < 30 ? '+ 15 points (RSI oversold - bullish signal)' : tech.rsi > 70 ? '- 15 points (RSI overbought - bearish signal)' : '+ 0 points (RSI neutral)'}<br>
-                                ${tech.momentum > 5 ? '+ 15 points (strong positive momentum)' : tech.momentum > 0 ? '+ 5 points (positive momentum)' : tech.momentum < -5 ? '- 15 points (strong negative momentum)' : '- 5 points (negative momentum)'}<br>
-                                ${tech.currentPrice > tech.sma20 ? '+ 10 points (price above 20-day SMA)' : '+ 0 points (price below 20-day SMA)'}<br>
-                                ${tech.sma20 > tech.sma50 ? '+ 10 points (20-day SMA above 50-day SMA)' : '+ 0 points'}<br>
-                                ${tech.volatility < 2 ? '+ 10 points (low volatility)' : tech.volatility > 5 ? '- 10 points (high volatility)' : '+ 0 points (moderate volatility)'}
-                            </div>
-                        </div>
-
-                        <div class="calculation-box" style="background: #dbeafe; border-left-color: #0284c7;">
-                            <div style="font-weight: 700; margin-bottom: 8px;">Combined Score Weighting</div>
-                            <div style="font-size: 14px; line-height: 1.6;">
-                                
+</html>
