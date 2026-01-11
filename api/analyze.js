@@ -1,5 +1,4 @@
-// api/analyze.js - Updated to use prediction system
-// This orchestrates data collection and prediction
+// api/analyze.js - Updated to use Yahoo Finance API
 import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req, res) {
@@ -16,93 +15,71 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { symbols, minUpside = 10, forceRefresh = false } = req.body;
+    const { symbols, minUpside = 0 } = req.body;
     
     if (!symbols || !Array.isArray(symbols)) {
       return res.status(400).json({ error: 'Symbols array required' });
     }
+
+    console.log('Analyzing symbols:', symbols);
 
     const supabase = createClient(
       process.env.SUPABASE_URL,
       process.env.SUPABASE_SERVICE_KEY
     );
 
-    // Check if we have recent predictions (less than 1 hour old)
-    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    // Check for recent predictions (less than 4 hours old)
+    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
     
-    if (!forceRefresh) {
-      const { data: existingPredictions } = await supabase
-        .from('predictions')
-        .select('*')
-        .in('symbol', symbols)
-        .gte('created_at', oneHourAgo)
-        .eq('prediction_date', new Date().toISOString().split('T')[0]);
+    const { data: existingPredictions } = await supabase
+      .from('predictions')
+      .select('*')
+      .in('symbol', symbols)
+      .gte('created_at', fourHoursAgo);
 
-      if (existingPredictions && existingPredictions.length > 0) {
-        // Return cached predictions
-        const opportunities = existingPredictions
-          .filter(p => p.predicted_upside >= minUpside)
-          .map(p => ({
-            symbol: p.symbol,
-            name: p.symbol,
-            price: p.current_price,
-            target: p.predicted_price,
-            upside: p.predicted_upside,
-            confidence: p.confidence_score,
-            technicalScore: p.technical_score,
-            analystScore: p.analyst_score,
-            sentimentScore: p.sentiment_score,
-            signals: [
-              { text: `30-day predicted upside: +${p.predicted_upside.toFixed(1)}%`, bullish: true },
-              { text: `Confidence: ${p.confidence_score.toFixed(0)}%`, bullish: true },
-              { text: `Technical score: ${p.technical_score.toFixed(0)}/100`, bullish: p.technical_score > 60 }
-            ]
-          }))
-          .sort((a, b) => b.upside - a.upside);
+    if (existingPredictions && existingPredictions.length > 0) {
+      const opportunities = existingPredictions
+        .filter(p => p.predicted_upside >= minUpside)
+        .map(p => ({
+          symbol: p.symbol,
+          name: p.symbol,
+          currentPrice: p.current_price,
+          predictedPrice: p.predicted_price,
+          predictedUpside: p.predicted_upside,
+          confidence: p.confidence_score,
+          technicalScore: p.technical_score,
+          analystScore: p.analyst_score,
+          sentimentScore: p.sentiment_score,
+          combinedScore: (p.technical_score * 0.4 + p.analyst_score * 0.4 + p.sentiment_score * 0.2),
+          technical: p.technical_data || {},
+          signals: p.signals || []
+        }))
+        .sort((a, b) => b.combinedScore - a.combinedScore);
 
-        return res.status(200).json({
-          success: true,
-          count: opportunities.length,
-          opportunities: opportunities,
-          cached: true,
-          analyzedAt: new Date().toISOString()
-        });
-      }
+      return res.status(200).json({
+        success: true,
+        count: opportunities.length,
+        opportunities: opportunities,
+        cached: true,
+        analyzedAt: new Date().toISOString()
+      });
     }
 
-    // Check if we have historical data
-    const { data: existingPrices } = await supabase
-      .from('stock_prices')
-      .select('symbol, date')
-      .in('symbol', symbols)
-      .order('date', { ascending: false })
-      .limit(symbols.length);
-
-    console.log('Found price data for symbols:', existingPrices?.map(p => p.symbol));
-
-    // Generate predictions
-    console.log('Generating predictions...');
-    
+    // Generate new predictions using real API
     const protocol = req.headers['x-forwarded-proto'] || 'https';
     const host = req.headers['host'];
     const baseUrl = host ? `${protocol}://${host}` : 'http://localhost:3000';
     
-    let predictResponse;
-    try {
-      predictResponse = await fetch(`${baseUrl}/api/predict`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbols, minUpside })
-      });
-    } catch (fetchError) {
-      console.error('Predict API fetch error:', fetchError);
-      throw new Error(`Could not reach predict API: ${fetchError.message}`);
-    }
+    const predictResponse = await fetch(`${baseUrl}/api/predict`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbols, minUpside })
+    });
 
     if (!predictResponse.ok) {
       const errorText = await predictResponse.text();
       console.error('Predict API error:', errorText);
-      throw new Error(`Prediction API returned ${predictResponse.status}: ${errorText.substring(0, 200)}`);
+      throw new Error(`Prediction API error: ${predictResponse.status}`);
     }
 
     const predictions = await predictResponse.json();
