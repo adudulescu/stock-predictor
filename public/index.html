@@ -43,6 +43,14 @@
         .indicator-value { color: #059669; font-weight: 600; }
         .section-title { font-size: 18px; font-weight: 700; color: #1a202c; margin: 24px 0 12px 0; border-bottom: 2px solid #e5e7eb; padding-bottom: 8px; }
         .calculation-box { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 12px; margin: 12px 0; border-radius: 4px; }
+        .tab-button { background: white; border: none; padding: 12px 24px; cursor: pointer; font-weight: 600; color: #6b7280; border-bottom: 3px solid transparent; }
+        .tab-button.active { color: #0284c7; border-bottom-color: #0284c7; }
+        .tab-button:hover { background: #f3f4f6; }
+        .stat-card { background: #f9fafb; border-radius: 8px; padding: 20px; border-left: 4px solid #0284c7; }
+        .stat-label { font-size: 12px; color: #6b7280; font-weight: 600; text-transform: uppercase; }
+        .stat-value { font-size: 32px; font-weight: 700; color: #1a202c; margin: 8px 0; }
+        .progress-bar { background: #e5e7eb; height: 24px; border-radius: 12px; overflow: hidden; }
+        .progress-fill { background: linear-gradient(90deg, #10b981, #059669); height: 100%; display: flex; align-items: center; justify-content: center; color: white; font-size: 12px; font-weight: 600; transition: width 0.3s; }
     </style>
 </head>
 <body>
@@ -50,6 +58,18 @@
         <div class="header">
             <h1>📈 S&P 500 Upside Predictor</h1>
             
+            <!-- Tab Navigation -->
+            <div style="display: flex; gap: 8px; margin-bottom: 16px; border-bottom: 2px solid #e5e7eb;">
+                <button onclick="showTab('analyze')" id="tabAnalyze" class="tab-button active">
+                    🔍 Analyze
+                </button>
+                <button onclick="showTab('admin')" id="tabAdmin" class="tab-button">
+                    ⚙️ Admin
+                </button>
+            </div>
+
+            <!-- Analyze Tab -->
+            <div id="analyzeTab">
             <div class="auth-section" id="authSection">
                 <div id="loginView">
                     <p style="margin-bottom: 12px; color: #0c4a6e; font-weight: 600;">Sign in to save watchlists & get alerts</p>
@@ -94,6 +114,56 @@
             <button onclick="analyzeStocks()" id="analyzeBtn" style="width: 100%; padding: 16px; background: #10b981; color: white; border: none; border-radius: 8px; font-size: 18px; font-weight: 700; cursor: pointer; margin-bottom: 16px;">
                 🔍 Analyze Top Opportunities
             </button>
+        </div>
+
+            <!-- Admin Tab -->
+            <div id="adminTab" style="display: none;">
+                <h2 style="color: #1a202c; margin-bottom: 16px;">📊 API Usage Dashboard</h2>
+                
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px;">
+                    <div class="stat-card">
+                        <div class="stat-label">Total Requests (24h)</div>
+                        <div class="stat-value" id="totalRequests">-</div>
+                    </div>
+                    <div class="stat-card" style="border-left-color: #10b981;">
+                        <div class="stat-label">Successful</div>
+                        <div class="stat-value" style="color: #059669;" id="successfulRequests">-</div>
+                    </div>
+                    <div class="stat-card" style="border-left-color: #ef4444;">
+                        <div class="stat-label">Failed</div>
+                        <div class="stat-value" style="color: #dc2626;" id="failedRequests">-</div>
+                    </div>
+                    <div class="stat-card" style="border-left-color: #f59e0b;">
+                        <div class="stat-label">Rate Limits Hit</div>
+                        <div class="stat-value" style="color: #d97706;" id="rateLimitHits">-</div>
+                    </div>
+                </div>
+
+                <div style="background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 16px;">
+                    <h3 style="margin-bottom: 12px;">Daily API Limit Usage</h3>
+                    <div style="margin-bottom: 8px; font-size: 14px; color: #6b7280;">
+                        <span id="usedRequests">0</span> / <span id="dailyLimit">500</span> requests used
+                        <span style="float: right; font-weight: 600;" id="remainingRequests">500 remaining</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill" style="width: 0%;">0%</div>
+                    </div>
+                    <div style="margin-top: 8px; font-size: 12px; color: #6b7280;">
+                        API Provider: <strong>yahoo-finance15.p.rapidapi.com</strong>
+                    </div>
+                </div>
+
+                <div style="background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                    <h3 style="margin-bottom: 16px;">Recent Activity</h3>
+                    <div id="recentActivity" style="max-height: 300px; overflow-y: auto;">
+                        <p style="color: #6b7280; text-align: center; padding: 20px;">Loading...</p>
+                    </div>
+                </div>
+
+                <button onclick="loadAdminStats()" style="width: 100%; padding: 12px; background: #0284c7; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; margin-top: 16px;">
+                    🔄 Refresh Stats
+                </button>
+            </div>
         </div>
 
         <div class="my-watchlist" id="watchlistSection" style="display: none;">
@@ -541,6 +611,92 @@
             }
             document.getElementById('analysisModal').style.display = 'none';
             document.body.style.overflow = 'auto';
+        }
+
+        // Tab switching
+        function showTab(tabName) {
+            const analyzeTab = document.getElementById('analyzeTab');
+            const adminTab = document.getElementById('adminTab');
+            const btnAnalyze = document.getElementById('tabAnalyze');
+            const btnAdmin = document.getElementById('tabAdmin');
+
+            if (tabName === 'analyze') {
+                analyzeTab.style.display = 'block';
+                adminTab.style.display = 'none';
+                btnAnalyze.classList.add('active');
+                btnAdmin.classList.remove('active');
+            } else if (tabName === 'admin') {
+                analyzeTab.style.display = 'none';
+                adminTab.style.display = 'block';
+                btnAnalyze.classList.remove('active');
+                btnAdmin.classList.add('active');
+                loadAdminStats();
+            }
+        }
+
+        // Load admin statistics
+        async function loadAdminStats() {
+            try {
+                const response = await fetch('/api/admin-stats');
+                const data = await response.json();
+
+                if (data.success) {
+                    // Update stat cards
+                    document.getElementById('totalRequests').textContent = data.last24Hours.totalRequests;
+                    document.getElementById('successfulRequests').textContent = data.last24Hours.successfulRequests;
+                    document.getElementById('failedRequests').textContent = data.last24Hours.failedRequests;
+                    document.getElementById('rateLimitHits').textContent = data.last24Hours.rateLimitHits;
+
+                    // Update progress bar
+                    document.getElementById('usedRequests').textContent = data.last24Hours.totalRequests;
+                    document.getElementById('dailyLimit').textContent = data.dailyLimit;
+                    document.getElementById('remainingRequests').textContent = data.remainingRequests;
+                    
+                    const progressFill = document.getElementById('progressFill');
+                    const percentage = parseFloat(data.percentageUsed);
+                    progressFill.style.width = percentage + '%';
+                    progressFill.textContent = percentage.toFixed(1) + '%';
+                    
+                    // Change color based on usage
+                    if (percentage > 80) {
+                        progressFill.style.background = 'linear-gradient(90deg, #ef4444, #dc2626)';
+                    } else if (percentage > 60) {
+                        progressFill.style.background = 'linear-gradient(90deg, #f59e0b, #d97706)';
+                    }
+
+                    // Display recent activity
+                    const activityHTML = data.recentActivity.length > 0
+                        ? data.recentActivity.map(activity => {
+                            const time = new Date(activity.timestamp).toLocaleTimeString();
+                            const successRate = activity.requests > 0 
+                                ? ((activity.successful / activity.requests) * 100).toFixed(0)
+                                : 0;
+                            
+                            return `
+                                <div style="padding: 12px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+                                    <div>
+                                        <div style="font-weight: 600; color: #1a202c;">${time}</div>
+                                        <div style="font-size: 12px; color: #6b7280;">
+                                            ${activity.requests} requests • ${successRate}% success rate
+                                        </div>
+                                    </div>
+                                    <div style="text-align: right;">
+                                        <div style="font-size: 14px; color: #059669;">✓ ${activity.successful}</div>
+                                        ${activity.failed > 0 ? `<div style="font-size: 14px; color: #dc2626;">✗ ${activity.failed}</div>` : ''}
+                                        ${activity.rateLimited > 0 ? `<div style="font-size: 12px; color: #d97706;">⚠ ${activity.rateLimited} limited</div>` : ''}
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')
+                        : '<p style="color: #6b7280; text-align: center; padding: 20px;">No activity in the last 24 hours</p>';
+
+                    document.getElementById('recentActivity').innerHTML = activityHTML;
+                }
+            } catch (error) {
+                console.error('Failed to load admin stats:', error);
+                document.getElementById('recentActivity').innerHTML = 
+                    '<p style="color: #dc2626; text-align: center; padding: 20px;">Failed to load statistics</p>';
+            }
         }
     </script>
 </body>

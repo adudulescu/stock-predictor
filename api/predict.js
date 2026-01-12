@@ -1,4 +1,4 @@
-// api/predict.js - Robust version with fallbacks
+// api/predict.js - Real data only, no synthetic fallback
 import { createClient } from '@supabase/supabase-js';
 
 const RAPIDAPI_KEY = '58cacb4713mshe9e5eb3e89dad26p12c9d0jsn2113d69535c8';
@@ -24,122 +24,178 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Symbols array required' });
     }
 
-    console.log('Generating predictions for:', symbols.join(', '));
-
     const supabase = createClient(
       process.env.SUPABASE_URL,
       process.env.SUPABASE_SERVICE_KEY
     );
 
     const predictions = [];
-    let successCount = 0;
-    let failCount = 0;
+    const apiStats = {
+      totalRequests: 0,
+      successfulRequests: 0,
+      failedRequests: 0,
+      rateLimitHits: 0
+    };
 
+    // Process in batches to avoid rate limits
     for (const symbol of symbols) {
       try {
-        console.log(`[${symbol}] Starting analysis...`);
+        console.log(`[${symbol}] Fetching real-time data...`);
         
-        // Fetch quote data with retry
-        let quote = null;
-        let currentPrice = null;
-        let name = symbol;
-        
-        for (let attempt = 1; attempt <= 2; attempt++) {
-          try {
-            const quoteResponse = await fetch(
-              `https://${RAPIDAPI_HOST}/api/v1/markets/stock/quotes?ticker=${symbol}`,
-              {
-                headers: {
-                  'X-RapidAPI-Key': RAPIDAPI_KEY,
-                  'X-RapidAPI-Host': RAPIDAPI_HOST
-                }
-              }
-            );
-
-            if (quoteResponse.ok) {
-              const quoteData = await quoteResponse.json();
-              const quotes = quoteData.body;
-              
-              if (Array.isArray(quotes) && quotes.length > 0) {
-                quote = quotes[0];
-                currentPrice = quote.regularMarketPrice;
-                name = quote.shortName || quote.longName || symbol;
-                console.log(`[${symbol}] Quote fetched: $${currentPrice}`);
-                break;
-              }
-            } else if (quoteResponse.status === 429) {
-              console.log(`[${symbol}] Rate limited, waiting...`);
-              await new Promise(resolve => setTimeout(resolve, 2000));
+        // Get real-time quote
+        apiStats.totalRequests++;
+        const quoteResponse = await fetch(
+          `https://${RAPIDAPI_HOST}/api/v1/markets/stock/quotes?ticker=${symbol}`,
+          {
+            headers: {
+              'X-RapidAPI-Key': RAPIDAPI_KEY,
+              'X-RapidAPI-Host': RAPIDAPI_HOST
             }
-          } catch (err) {
-            console.log(`[${symbol}] Quote attempt ${attempt} failed:`, err.message);
+          }
+        );
+
+        if (!quoteResponse.ok) {
+          if (quoteResponse.status === 429) {
+            apiStats.rateLimitHits++;
+            console.log(`[${symbol}] Rate limited, waiting 3s...`);
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            continue;
+          }
+          apiStats.failedRequests++;
+          console.log(`[${symbol}] Quote failed: ${quoteResponse.status}`);
+          continue;
+        }
+
+        const quoteData = await quoteResponse.json();
+        const quote = quoteData.body?.[0];
+        
+        if (!quote?.regularMarketPrice) {
+          apiStats.failedRequests++;
+          console.log(`[${symbol}] No quote data`);
+          continue;
+        }
+
+        apiStats.successfulRequests++;
+        const currentPrice = quote.regularMarketPrice;
+        const name = quote.shortName || quote.longName || symbol;
+
+        // Get historical data from Supabase (from initialization)
+        const { data: historicalPrices } = await supabase
+          .from('stock_prices')
+          .select('*')
+          .eq('symbol', symbol)
+          .order('date', { ascending: true })
+          .limit(60);
+
+        // If no historical data in DB, fetch from API
+        let prices = historicalPrices || [];
+        
+        if (prices.length < 20) {
+          console.log(`[${symbol}] Fetching historical data from API...`);
+          apiStats.totalRequests++;
+          
+          const historyResponse = await fetch(
+            `https://${RAPIDAPI_HOST}/api/v1/markets/stock/history?ticker=${symbol}&interval=1d`,
+            {
+              headers: {
+                'X-RapidAPI-Key': RAPIDAPI_KEY,
+                'X-RapidAPI-Host': RAPIDAPI_HOST
+              }
+            }
+          );
+
+          if (historyResponse.ok) {
+            apiStats.successfulRequests++;
+            const historyData = await historyResponse.json();
+            const items = historyData.body?.items || {};
+            
+            if (Array.isArray(items)) {
+              prices = items.slice(-60);
+            } else if (typeof items === 'object') {
+              prices = Object.values(items)
+                .sort((a, b) => (a.date_utc || 0) - (b.date_utc || 0))
+                .slice(-60);
+            }
+
+            // Store in Supabase for future use
+            if (prices.length > 0) {
+              const priceData = prices.map(p => ({
+                symbol: symbol,
+                date: p.date,
+                date_utc: p.date_utc,
+                open: p.open,
+                high: p.high,
+                low: p.low,
+                close: p.close,
+                volume: p.volume
+              }));
+
+              await supabase.from('stock_prices').upsert(priceData, {
+                onConflict: 'symbol,date'
+              });
+            }
+          } else {
+            if (historyResponse.status === 429) apiStats.rateLimitHits++;
+            apiStats.failedRequests++;
           }
         }
 
-        // If still no quote, use estimated price
-        if (!currentPrice) {
-          console.log(`[${symbol}] Using estimated price`);
-          currentPrice = 100 + Math.random() * 100; // Estimate between $100-$200
-          quote = { 
-            regularMarketPrice: currentPrice,
-            shortName: symbol,
-            fiftyTwoWeekLow: currentPrice * 0.8,
-            fiftyTwoWeekHigh: currentPrice * 1.2
-          };
+        // Skip if insufficient real data
+        if (prices.length < 20) {
+          console.log(`[${symbol}] Insufficient historical data (${prices.length} days) - SKIPPING`);
+          continue;
         }
 
-        // Generate synthetic historical data
-        console.log(`[${symbol}] Generating technical data...`);
-        const prices = generateSyntheticPrices(currentPrice, 30);
+        console.log(`[${symbol}] Using ${prices.length} days of REAL historical data`);
+
+        // Calculate technical indicators from REAL data
         const technical = calculateTechnicalIndicators(prices, currentPrice);
 
-        // Calculate scores
-        const technicalScore = calculateTechnicalScore(technical, quote);
-        
-        // Analyst score - estimate based on market position
+        // Get analyst data
+        const analystTarget = quote.targetMeanPrice?.raw || quote.targetMeanPrice;
         let analystScore = 50;
-        const analystTarget = quote.targetMeanPrice;
+        
         if (analystTarget && currentPrice) {
           const analystUpside = ((analystTarget - currentPrice) / currentPrice) * 100;
           analystScore = Math.min(100, Math.max(0, 50 + (analystUpside * 1.5)));
-        } else {
-          // Estimate based on 52-week range
-          if (quote.fiftyTwoWeekLow && quote.fiftyTwoWeekHigh) {
-            const range = quote.fiftyTwoWeekHigh - quote.fiftyTwoWeekLow;
-            const position = (currentPrice - quote.fiftyTwoWeekLow) / range;
-            analystScore = position < 0.4 ? 65 : position > 0.8 ? 40 : 55;
-          }
         }
 
-        // Sentiment score
-        let sentimentScore = 55; // Slightly bullish default
+        const technicalScore = calculateTechnicalScore(technical, quote);
         
-        // Combined score
+        let sentimentScore = 50;
+        const rating = quote.averageAnalystRating;
+        if (rating) {
+          const ratingStr = String(rating);
+          if (ratingStr.includes('Buy') || ratingStr.includes('1')) sentimentScore = 70;
+          else if (ratingStr.includes('Hold') || ratingStr.includes('2')) sentimentScore = 50;
+          else if (ratingStr.includes('Sell')) sentimentScore = 30;
+        }
+
         const weights = { technical: 0.40, analyst: 0.40, sentiment: 0.20 };
         const combinedScore = 
           (technicalScore * weights.technical) +
           (analystScore * weights.analyst) +
           (sentimentScore * weights.sentiment);
 
-        // Calculate prediction
+        // Prediction calculation
         const momentumFactor = technical.momentum * 0.4;
         const trendFactor = (technical.currentPrice > technical.sma20 ? 3 : -2) + 
                            (technical.sma20 > technical.sma50 ? 3 : -2);
-        const analystInfluence = analystScore > 50 ? (analystScore - 50) * 0.3 : 0;
-        const volatilityBonus = Math.min(3, technical.volatility * 0.3);
+        const analystInfluence = analystTarget 
+          ? ((analystTarget - currentPrice) / currentPrice) * 100 * 0.4
+          : 0;
         
-        const predictedUpside = momentumFactor + trendFactor + analystInfluence + volatilityBonus;
+        const predictedUpside = momentumFactor + trendFactor + analystInfluence;
         const predictedPrice = currentPrice * (1 + predictedUpside / 100);
 
-        // Confidence
-        const dataQuality = 0.7; // Synthetic data
+        const dataQuality = Math.min(prices.length / 60, 1);
         const analystQuality = analystTarget ? 0.9 : 0.6;
         const volatilityPenalty = Math.max(0, 1 - (technical.volatility / 15));
         
         const confidence = ((combinedScore / 100) * 0.5 + 
-                           dataQuality * 0.2 + 
+                           dataQuality * 0.25 + 
                            analystQuality * 0.15 +
-                           volatilityPenalty * 0.15) * 100;
+                           volatilityPenalty * 0.10) * 100;
 
         const signals = generateSignals(technical, quote, predictedUpside, analystTarget);
         
@@ -155,58 +211,59 @@ export default async function handler(req, res) {
           sentimentScore: sentimentScore,
           combinedScore: combinedScore,
           technical: technical,
-          signals: signals
+          signals: signals,
+          dataSource: 'REAL'
         };
 
-        // Store in database
-        try {
-          await supabase.from('predictions').upsert([{
-            symbol: symbol,
-            prediction_date: new Date().toISOString().split('T')[0],
-            target_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-            current_price: currentPrice,
-            predicted_price: predictedPrice,
-            predicted_upside: predictedUpside,
-            confidence_score: confidence,
-            technical_score: technicalScore,
-            analyst_score: analystScore,
-            sentiment_score: sentimentScore,
-            technical_data: technical,
-            signals: signals,
-            model_version: 'v2.1'
-          }], {
-            onConflict: 'symbol,prediction_date'
-          });
-        } catch (dbError) {
-          console.error(`[${symbol}] Database error:`, dbError.message);
-        }
+        await supabase.from('predictions').upsert([{
+          symbol: symbol,
+          prediction_date: new Date().toISOString().split('T')[0],
+          target_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          current_price: currentPrice,
+          predicted_price: predictedPrice,
+          predicted_upside: predictedUpside,
+          confidence_score: confidence,
+          technical_score: technicalScore,
+          analyst_score: analystScore,
+          sentiment_score: sentimentScore,
+          technical_data: technical,
+          signals: signals,
+          model_version: 'v3.0-real'
+        }], {
+          onConflict: 'symbol,prediction_date'
+        });
 
         predictions.push(prediction);
-        successCount++;
-        console.log(`[${symbol}] ✓ Prediction: ${predictedUpside.toFixed(1)}% upside`);
+        console.log(`[${symbol}] ✓ Prediction complete: ${predictedUpside.toFixed(1)}% upside`);
 
-        // Rate limiting
-        await new Promise(resolve => setTimeout(resolve, 300));
+        // Rate limiting - wait 500ms between stocks
+        await new Promise(resolve => setTimeout(resolve, 500));
 
       } catch (error) {
-        failCount++;
-        console.error(`[${symbol}] ✗ Error:`, error.message);
+        console.error(`[${symbol}] Error:`, error.message);
       }
     }
 
-    // Sort and filter
+    // Log API usage to database
+    await supabase.from('api_usage_logs').insert([{
+      timestamp: new Date().toISOString(),
+      total_requests: apiStats.totalRequests,
+      successful_requests: apiStats.successfulRequests,
+      failed_requests: apiStats.failedRequests,
+      rate_limit_hits: apiStats.rateLimitHits,
+      api_provider: 'yahoo-finance15'
+    }]);
+
     predictions.sort((a, b) => b.combinedScore - a.combinedScore);
     const filteredPredictions = predictions.filter(p => p.predictedUpside >= minUpside);
-
-    console.log(`Analysis complete: ${successCount} success, ${failCount} failed, ${filteredPredictions.length} above ${minUpside}%`);
 
     return res.status(200).json({
       success: true,
       count: filteredPredictions.length,
       opportunities: filteredPredictions,
       analyzedAt: new Date().toISOString(),
-      modelVersion: 'v2.1',
-      stats: { successCount, failCount, totalProcessed: symbols.length }
+      modelVersion: 'v3.0-real',
+      apiStats: apiStats
     });
 
   } catch (error) {
@@ -216,28 +273,6 @@ export default async function handler(req, res) {
       message: error.message 
     });
   }
-}
-
-function generateSyntheticPrices(currentPrice, days = 30) {
-  const prices = [];
-  let price = currentPrice * 0.92; // Start 8% below
-  const trend = Math.random() > 0.5 ? 0.002 : -0.001; // Random trend
-  
-  for (let i = 0; i < days; i++) {
-    const dailyChange = (Math.random() - 0.48) * 0.025 + trend;
-    price = price * (1 + dailyChange);
-    
-    prices.push({
-      date: new Date(Date.now() - (days - i) * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-      close: price,
-      open: price * (1 - Math.random() * 0.01),
-      high: price * (1 + Math.random() * 0.015),
-      low: price * (1 - Math.random() * 0.015),
-      volume: Math.floor(1000000 + Math.random() * 5000000)
-    });
-  }
-  
-  return prices;
 }
 
 function calculateTechnicalIndicators(prices, currentPrice) {
@@ -283,7 +318,7 @@ function calculateSMA(prices, period) {
 }
 
 function calculateVolatility(prices) {
-  if (prices.length < 2) return 5;
+  if (prices.length < 2) return 0;
   
   const returns = [];
   for (let i = 1; i < prices.length; i++) {
@@ -298,30 +333,25 @@ function calculateVolatility(prices) {
 function calculateTechnicalScore(technical, quote) {
   let score = 50;
   
-  // RSI
   if (technical.rsi < 30) score += 20;
   else if (technical.rsi < 40) score += 10;
   else if (technical.rsi > 70) score -= 15;
   else if (technical.rsi > 60) score -= 5;
   
-  // Momentum
   if (technical.momentum > 10) score += 20;
   else if (technical.momentum > 5) score += 15;
   else if (technical.momentum > 0) score += 5;
   else if (technical.momentum < -10) score -= 20;
   else if (technical.momentum < -5) score -= 10;
   
-  // Trend
   if (technical.currentPrice > technical.sma20) score += 10;
   if (technical.sma20 > technical.sma50) score += 10;
   if (technical.currentPrice > technical.sma50) score += 5;
   
-  // Volatility
   if (technical.volatility < 20) score += 10;
   else if (technical.volatility < 30) score += 5;
   else if (technical.volatility > 50) score -= 10;
   
-  // 52-week position
   if (quote.fiftyTwoWeekLow && quote.fiftyTwoWeekHigh) {
     const range = quote.fiftyTwoWeekHigh - quote.fiftyTwoWeekLow;
     const position = (technical.currentPrice - quote.fiftyTwoWeekLow) / range;
@@ -336,41 +366,41 @@ function generateSignals(technical, quote, predictedUpside, analystTarget) {
   const signals = [];
   
   if (predictedUpside > 15) {
-    signals.push({ text: `Strong upside potential: +${predictedUpside.toFixed(1)}%`, bullish: true });
+    signals.push({ text: `Strong upside: +${predictedUpside.toFixed(1)}%`, bullish: true });
   } else if (predictedUpside > 8) {
     signals.push({ text: `Moderate upside: +${predictedUpside.toFixed(1)}%`, bullish: true });
   } else if (predictedUpside > 3) {
-    signals.push({ text: `Modest upside: +${predictedUpside.toFixed(1)}%`, bullish: true });
-  } else if (predictedUpside < -5) {
-    signals.push({ text: `Downside risk: ${predictedUpside.toFixed(1)}%`, bullish: false });
+    signals.push({ text: `Modest gain expected: +${predictedUpside.toFixed(1)}%`, bullish: true });
   }
   
   if (technical.rsi < 30) {
-    signals.push({ text: 'Oversold conditions - potential bounce', bullish: true });
+    signals.push({ text: 'Oversold - potential bounce opportunity', bullish: true });
   } else if (technical.rsi > 70) {
-    signals.push({ text: 'Overbought - caution advised', bullish: false });
+    signals.push({ text: 'Overbought - exercise caution', bullish: false });
   }
   
   if (technical.momentum > 8) {
-    signals.push({ text: 'Strong positive momentum', bullish: true });
+    signals.push({ text: 'Strong positive momentum trend', bullish: true });
   } else if (technical.momentum < -8) {
-    signals.push({ text: 'Negative momentum trend', bullish: false });
+    signals.push({ text: 'Negative momentum - downtrend', bullish: false });
   }
   
   if (technical.currentPrice > technical.sma20 && technical.sma20 > technical.sma50) {
-    signals.push({ text: 'Bullish trend: Price above moving averages', bullish: true });
+    signals.push({ text: 'Bullish: Price above key moving averages', bullish: true });
+  } else if (technical.currentPrice < technical.sma50) {
+    signals.push({ text: 'Below 50-day average - weak trend', bullish: false });
   }
   
   if (analystTarget) {
     const analystUpside = ((analystTarget - technical.currentPrice) / technical.currentPrice) * 100;
     if (analystUpside > 12) {
-      signals.push({ text: `Analyst target: +${analystUpside.toFixed(1)}%`, bullish: true });
+      signals.push({ text: `Analyst target: +${analystUpside.toFixed(1)}% upside`, bullish: true });
     }
   }
   
   if (technical.volatility > 40) {
-    signals.push({ text: 'High volatility - increased risk', bullish: false });
+    signals.push({ text: 'High volatility - elevated risk', bullish: false });
   }
   
-  return signals.slice(0, 5);
+  return signals.slice(0, 6);
 }
